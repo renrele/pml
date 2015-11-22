@@ -1,0 +1,107 @@
+---
+title: "pml project"
+author: "Elisa Lerner"
+date: "15 November 2015"
+output: html_document
+---
+
+
+```{r warning=FALSE, message=FALSE}
+library(caret)
+library(mlbench)
+data <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+```
+
+The raw datset includes 19622 observations of 160 variables.  
+This is a classification problem - there are  5 classes to identify: A,B,C,D,E.  The first step is to decide which of the variables to use as predictors.  
+
+```{r}
+str(data)
+```  
+
+Many of the variables contain NA's. I would like to see how many NA's there actually are in each column.  
+
+```{r}
+nas<-apply(data, MARGIN = 2, FUN = function(x) length(x[is.na(x)]) )
+unique(nas)
+```  
+It turns out that either variables have no NA's, or a large proportion ( equally large for all variables that do have NA's), so it seems reasonable to discard these variables.  
+```{r}
+#remove variables that are mostly NA 
+use<-data[,nas==0]
+testUse <- test[,nas==0]
+```  
+The first few columns appear to hold data that are not measurements made by the equipment and don't have any physical relationship with the outcome, so these are also discarded.  
+```{r}
+#remove variables that are not measurements of movements
+l <-dim(use)[2]
+use <- use[,8:l]
+testUse <- testUse[,8:l]
+```  
+Since multiple measurements were made of all the actions using the different sorts of equipment it is probable that some of the variables are highly correlated, so not all should be included in the model.  Pairwise correlations between the variables are made and highly correlated variables (greater than 0.75) are discarded.  
+
+```{r}
+#transform factor variables to numeric for correlation computations only
+temp<-use
+for(i in 1:dim(temp)[2]-1){
+        if(is.factor(temp[,i])){
+               temp[,i]<-as.numeric(temp[,i])
+        }
+                
+}
+
+# calculate correlation matrix
+correlationMatrix <- cor(temp[,-dim(temp)[2]])
+# find variables that are highly corrected 
+highCorr <- findCorrelation(correlationMatrix, cutoff=0.75)
+#remove these variables;retain original classes of features
+use<-use[-highCorr]
+testUse <- testUse[-highCorr]
+```  
+
+Finally, variables with very low variance are also discarded since they will be unable to explain variability in the data.  
+```{r}
+#remove variables with near zero variance
+nzv <- nearZeroVar(use,saveMetrics=TRUE)
+use <- use[,!nzv$nzv]
+testUse <- testUse[,!nzv$nzv]
+```  
+The dataset now has `r dim(use)[2]-1` variables which will be used as predictors for the outcome, classe.
+3-Fold cross validation is defined for the model.  
+```{r warning=FALSE, message=FALSE,cache=TRUE}
+fitControl <- trainControl(method = "repeatedcv", number = 3,repeats = 1, verbose = FALSE,returnResamp = "all")
+modFit <- train(classe~.,method="rpart",data=use,trControl=fitControl)
+modFit$results
+```  
+
+The model fitted by the 'rpart' method is disappointing, resulting in accuracy of only about 50%. There is no point using this method on the testing data.  
+
+Boosting is known to improve prediction:  
+```{r warning=FALSE, message=FALSE,cache=TRUE}
+modFit <- train(classe~.,method="gbm",data=use,trControl=fitControl,verbose=FALSE)
+
+modFit$finalModel
+modFit$results
+```    
+So the accuracy has shot up to `r modFit$results[9,5]` thanks to the boosting algorithm. This implies an estimate of the out of sample error to be `r 1-modFit$results[9,5]`.  
+
+```{r echo=FALSE}
+plot(modFit)
+```  
+
+Perhaps this can be further improved by trying a different algorithm.  
+Random forests generates the following model:
+```{r warning=FALSE,message=FALSE,cache=TRUE}
+modFit <- train(classe~.,method="rf",prox=TRUE,data=use,trControl=fitControl,verbose=FALSE)
+
+modFit$finalModel
+modFit$results
+plot(modFit)
+```   
+
+The accuracy is now `r max(modFit$results[1,2],modFit$results[2,2],modFit$results[3,2])`, hence estimate of out of sample error being `r 1-max(modFit$results[1,2],modFit$results[2,2],modFit$results[3,2])`.  With such a small error it should be possible to correctly predict 20 out of 20 test cases.  
+
+Now, applying to the testing data gives the following predictions:  
+```{r}
+predict(modFit,testUse)
